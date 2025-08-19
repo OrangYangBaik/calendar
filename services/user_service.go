@@ -23,7 +23,7 @@ import (
 
 type AuthService interface {
 	GetUserInfo(accessToken string) (*dtos.GoogleUserInfo, error)
-	ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oauth2.Token) (*models.User, error)
+	ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oauth2.Token, jwtToken string) (*models.User, error)
 	GenerateJWT(user *models.User) (string, time.Time, error)
 }
 
@@ -66,7 +66,7 @@ func (s *authService) GetUserInfo(accessToken string) (*dtos.GoogleUserInfo, err
 	return &userInfo, nil
 }
 
-func (s *authService) ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oauth2.Token) (*models.User, error) {
+func (s *authService) ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oauth2.Token, jwtToken string) (*models.User, error) {
 	encryptKey64 := os.Getenv("ENCRYPTION_SECRET_KEY")
 	if encryptKey64 == "" {
 		return nil, errors.New("ENCRYPTION_SECRET_KEY is not set")
@@ -84,8 +84,8 @@ func (s *authService) ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oa
 
 	existingUser, err := s.userRepo.GetByGoogleID(userInfo.ID)
 	if err == nil {
-		if existingUser.FolderID == "" {
-			folder_id, err := s.CreateFolderId(userInfo.ID)
+		if existingUser.FolderID == "" && jwtToken != "" {
+			folder_id, err := s.CreateFolderId(userInfo.ID, jwtToken)
 			if err != nil {
 				return nil, err
 			}
@@ -107,11 +107,6 @@ func (s *authService) ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oa
 		return nil, err
 	}
 
-	folder_id, err := s.CreateFolderId(userInfo.ID)
-	if err != nil {
-		return nil, err
-	}
-
 	newUser := &models.User{
 		GoogleID:     userInfo.ID,
 		Email:        userInfo.Email,
@@ -119,7 +114,6 @@ func (s *authService) ProcessGoogleUser(userInfo *dtos.GoogleUserInfo, token *oa
 		RefreshToken: token.RefreshToken,
 		AccessToken:  accessTokenEncrypt,
 		Expiry:       token.Expiry,
-		FolderID:     folder_id,
 	}
 
 	if err := s.userRepo.Create(newUser); err != nil {
@@ -135,10 +129,13 @@ func (s *authService) GenerateJWT(user *models.User) (string, time.Time, error) 
 	claims := dtos.Claims{
 		UserID:   strconv.FormatUint(uint64(user.ID), 10),
 		GoogleID: user.GoogleID,
-		FolderID: user.FolderID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expTime),
 		},
+	}
+
+	if user.FolderID != "" {
+		claims.FolderID = user.FolderID
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -152,7 +149,7 @@ func (s *authService) GenerateJWT(user *models.User) (string, time.Time, error) 
 	return tokenString, expTime, nil
 }
 
-func (s *authService) CreateFolderId(googleId string) (string, error) {
+func (s *authService) CreateFolderId(googleId, jwtToken string) (string, error) {
 	folderInfoUrl := "http://localhost:8081/storage/folder"
 	payload := map[string]interface{}{"title": googleId}
 
@@ -164,6 +161,7 @@ func (s *authService) CreateFolderId(googleId string) (string, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

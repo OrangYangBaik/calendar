@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"golang.org/x/oauth2"
@@ -36,6 +37,8 @@ func NewAuthController(authService services.AuthService) *AuthController {
 }
 
 func (ac *AuthController) GoogleCallback(c echo.Context) error {
+	var jwtToken string
+	var expiresAt time.Time
 	// Verify state (CSRF protection)
 	// state := c.QueryParam("state")
 	// stateCookie, err := c.Cookie(constants.StateSessionKey)
@@ -78,7 +81,7 @@ func (ac *AuthController) GoogleCallback(c echo.Context) error {
 		})
 	}
 
-	user, err := ac.authService.ProcessGoogleUser(userInfo, token)
+	user, err := ac.authService.ProcessGoogleUser(userInfo, token, "")
 	if err != nil {
 		errorMsg := fmt.Errorf("Error processing user: %v\n", err)
 		return c.JSON(http.StatusBadRequest, dtos.Response{
@@ -87,13 +90,33 @@ func (ac *AuthController) GoogleCallback(c echo.Context) error {
 		})
 	}
 
-	jwtToken, expiresAt, err := ac.authService.GenerateJWT(user)
+	jwtToken, expiresAt, err = ac.authService.GenerateJWT(user)
 	if err != nil {
 		errorMsg := fmt.Errorf("Error generating JWT: %v\n", err)
 		return c.JSON(http.StatusBadRequest, dtos.Response{
 			Data:  nil,
 			Error: errorMsg.Error(),
 		})
+	}
+
+	if user.FolderID == "" {
+		newUser, err := ac.authService.ProcessGoogleUser(userInfo, token, jwtToken)
+		if err != nil {
+			errorMsg := fmt.Errorf("Failed to create new user: %v\n", err)
+			return c.JSON(http.StatusInternalServerError, dtos.Response{
+				Data:  nil,
+				Error: errorMsg.Error(),
+			})
+		}
+
+		jwtToken, expiresAt, err = ac.authService.GenerateJWT(newUser)
+		if err != nil {
+			errorMsg := fmt.Errorf("Error generating JWT: %v\n", err)
+			return c.JSON(http.StatusBadRequest, dtos.Response{
+				Data:  nil,
+				Error: errorMsg.Error(),
+			})
+		}
 	}
 
 	return c.JSON(http.StatusOK, dtos.Response{
